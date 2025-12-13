@@ -8,6 +8,9 @@ import org.springframework.data.mongodb.core.mapping.Document;
 import org.springframework.data.mongodb.repository.MongoRepository;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.Recover;
+import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
 import org.springframework.web.bind.annotation.*;
 
@@ -25,51 +28,50 @@ public class NotificationService {
     @Autowired
     private NotificationRepository repository;
 
-    // --- 1. PRODUCER (The Sender) ---
-    // Sends a message to the main Kafka topic.
+    // --- 1. PRODUCER ---
     public String sendNotification(String message) {
         kafkaTemplate.send(TOPIC, message);
         return "Message sent to Kafka topic: " + message;
     }
 
-    // --- 2. CONSUMER (The Worker) ---
-    // Reads from Kafka and saves to MongoDB.
-    // Has "Fault Tolerance": If it crashes, it moves data to DLQ.
+    // --- 2. CONSUMER (Resilient Worker) ---
+    // Tries 3 times. Waits 1s, then 2s. If all fail, calls recover().
     @KafkaListener(topics = TOPIC, groupId = "notification-group")
+    @Retryable(
+        retryFor = RuntimeException.class, 
+        maxAttempts = 3, 
+        backoff = @Backoff(delay = 1000, multiplier = 2)
+    )
     public void consume(String message) {
-        System.out.println("🔥 Kafka Listener received: " + message);
+        System.out.println("🔄 Processing Attempt: " + message);
 
-        try {
-            // SIMULATE ERROR: If message contains "error", force a crash.
-            if (message.contains("error")) {
-                throw new RuntimeException("Simulated API Failure!");
-            }
-
-            // Happy Path: Save to MongoDB
-            NotificationLog log = new NotificationLog();
-            log.setMessage(message);
-            log.setTimestamp(LocalDateTime.now());
-            repository.save(log);
-            System.out.println("✅ Saved to MongoDB!");
-
-        } catch (Exception e) {
-            System.err.println("❌ Processing Failed. Moving to DLQ...");
-            // Send to Dead Letter Topic manually so data isn't lost
-            kafkaTemplate.send(DLQ_TOPIC, "FAILED: " + message);
+        if (message.contains("error")) {
+            throw new RuntimeException("Simulated API Failure!");
         }
+
+        NotificationLog log = new NotificationLog();
+        log.setMessage(message);
+        log.setTimestamp(LocalDateTime.now());
+        repository.save(log);
+        System.out.println("✅ Saved to MongoDB!");
     }
 
-    // --- 3. DLQ LISTENER (The Safety Net) ---
-    // Listens to the 'dead' messages.
-    // In a real company, this would trigger a Slack alert or PagerDuty.
+    // --- 3. FALLBACK (Recover Method) ---
+    // Only runs if ALL retries fail. Moves data to DLQ.
+    @Recover
+    public void recover(RuntimeException e, String message) {
+        System.err.println("❌ All Retries Failed. Moving to DLQ...");
+        kafkaTemplate.send(DLQ_TOPIC, "FAILED: " + message);
+    }
+
+    // --- 4. DLQ LISTENER ---
     @KafkaListener(topics = DLQ_TOPIC, groupId = "dlq-group")
     public void consumeDLQ(String message) {
         System.out.println("⚠️ DLQ Received Bad Message: " + message);
     }
 }
 
-// --- SUPPORTING CLASSES (Keep these here for simplicity) ---
-
+// --- SUPPORTING CLASSES ---
 @RestController
 @RequestMapping("/api/notify")
 class NotificationController {
