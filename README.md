@@ -1,69 +1,103 @@
+Here is the complete `README.md` for **StreamFlow**. You can copy the entire block below with one click.
+
+````markdown
 # 🌊 StreamFlow - Distributed Notification Engine
 
-StreamFlow is a fault-tolerant, asynchronous notification system built to handle high-throughput event streaming. It utilizes **Apache Kafka** for decoupled communication, **MongoDB** for persistence, and implements a **Dead Letter Queue (DLQ)** pattern to ensure zero data loss during processing failures.
+StreamFlow is a fault-tolerant, asynchronous notification system designed for high throughput and reliability. It utilizes **Apache Kafka** for decoupled event streaming, **MongoDB** for persistent logging, and implements a robust **Resilience Strategy** using Exponential Backoff and Dead Letter Queues (DLQ) to ensure zero data loss.
+
+## 🚀 Tech Stack
+- **Core:** Java 17, Spring Boot 3.4
+- **Messaging:** Apache Kafka (with Zookeeper)
+- **Database:** MongoDB (NoSQL Persistence)
+- **Resilience:** Spring Retry (Exponential Backoff policies)
+- **Containerization:** Docker & Docker Compose
+- **Documentation:** OpenAPI (Swagger UI)
 
 ## 🏗️ System Architecture
 
+The system decouples producers and consumers to handle massive traffic spikes gracefully without crashing downstream services.
+
 ```mermaid
 graph LR
-    User[User / API Client] -->|POST /notify| API[Spring Boot Producer]
+    User[User / API Client] -->|POST /notify| API[Producer Service]
     API -->|Async Event| Kafka{Kafka Topic: user-notifications}
     
     subgraph "Microservices Cluster"
-        Kafka -->|Consume| Consumer[Notification Service]
+        Kafka -->|Consume| Consumer[Worker Service]
         Consumer -->|Success| DB[(MongoDB)]
-        Consumer --x|Failure| DLQ{Dead Letter Queue}
+        Consumer --x|Transient Fail| Retry[Exponential Backoff]
+        Retry -->|Max Retries Exceeded| DLQ{Dead Letter Queue}
     end
     
-    DLQ -.->|Manual Retry / Alert| Admin[DevOps / Admin]
-    
-    style DLQ fill:#f9f,stroke:#333,stroke-width:2px,stroke-dasharray: 5 5
-    style DB fill:#bbf,stroke:#333,stroke-width:2px
+    DLQ -.->|Manual Inspection| Admin[DevOps Dashboard]
+````
 
+### Key Features
 
-🚀 Key Features
-Event-Driven Architecture: Decoupled Producer and Consumer services using Kafka.
+1.  **Event-Driven:** Fully asynchronous communication prevents blocking the main API thread.
+2.  **Resilience (Circuit Breaker Logic):**
+      * **Transient Failures:** If the consumer encounters a network blip, it retries **3 times** with **Exponential Backoff** (1s wait, then 2s wait).
+      * **Permanent Failures:** If all retries fail, the message is **not lost**. It is automatically moved to a **Dead Letter Queue (DLQ)** (`notifications-dlq`) for later inspection.
+3.  **Zero Data Loss:** Critical notifications are never dropped, ensuring 100% reliability for business-critical alerts.
 
-Fault Tolerance: Automatic error detection moving failed messages to a Dead Letter Queue (DLQ).
+## 🛠️ How to Run
 
-Scalability: Dockerized infrastructure managing Zookeeper, Kafka, and MongoDB containers.
+### 1\. Start Infrastructure
 
-Persistence: Asynchronous logging of all successful notifications to NoSQL storage.
+Make sure Docker Desktop is running, then spin up Kafka, Zookeeper, and MongoDB:
 
-Resilience: Implements Exponential Backoff Retries (3 attempts) to handle transient network failures before giving up.
-
-Fault Tolerance: Automatic Dead Letter Queue (DLQ) routing for permanent failures, ensuring Zero Data Loss.
-
-🛠️ Tech Stack
-Core: Java 21, Spring Boot 3.4
-
-Messaging: Apache Kafka, Zookeeper
-
-Database: MongoDB
-
-Infrastructure: Docker Compose
-
-⚡ How to Run
-Start Infrastructure
-
-Bash
-
+```bash
 docker-compose up -d
-Run the Application
+```
 
-Bash
+### 2\. Run the Application
 
-./mvnw spring-boot:run
-Test the API (Happy Path)
+Navigate to the project folder and start the Spring Boot app:
 
-Bash
+```bash
+cd core/core
+./mvnw.cmd spring-boot:run
+```
 
-curl -X POST "http://localhost:9090/api/notify?message=Hello_World"
-Result: Message saved to MongoDB.
+### 3\. Explore the API
 
-Test Fault Tolerance (DLQ)
+Once the server is running, access the interactive API documentation:
+👉 **[http://localhost:9090/swagger-ui.html](https://www.google.com/search?q=http://localhost:9090/swagger-ui.html)**
 
-Bash
+-----
 
-curl -X POST "http://localhost:9090/api/notify?message=Testing_error"
-Result: Consumer crash simulated -> Message moved to notifications-dlq.
+## 🧪 Fault Tolerance Proof (The "Crash Test")
+
+We simulated a system failure by sending a "poison pill" message (`error`) to the system. The logs demonstrate the **Exponential Backoff** and **DLQ Fallback** mechanisms kicking in to protect data integrity.
+
+### Scenario:
+
+1.  **User** sends a notification with the message text `"error"`.
+2.  **Consumer** detects the error and throws an exception.
+3.  **Spring Retry** attempts to process it 3 times with increasing delays.
+4.  **Recovery:** After the 3rd failure, the system captures the event and routes it to the `notifications-dlq` topic.
+
+### Console Output Evidence:
+
+```text
+🔄 Processing Attempt: error
+... (1 second wait) ...
+🔄 Processing Attempt: error
+... (2 second wait) ...
+🔄 Processing Attempt: error
+❌ All Retries Failed. Moving to DLQ...
+⚠️ DLQ Received Bad Message: FAILED: error
+```
+
+## 📝 API Endpoints
+
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `POST` | `/api/notify?message={text}` | Triggers an asynchronous notification event. |
+
+## 👨‍💻 Author
+
+**Mohd Arshad**
+
+```
+```
