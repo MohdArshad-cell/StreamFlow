@@ -1,3 +1,5 @@
+![Build Status](https://github.com/MohdArshad-cell/stream-flow/actions/workflows/maven.yml/badge.svg)
+
 ````markdown
 # 🌊 StreamFlow - Distributed Notification Engine
 
