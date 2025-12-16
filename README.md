@@ -1,5 +1,3 @@
-Here is the complete `README.md` for **StreamFlow**. You can copy the entire block below with one click.
-
 ````markdown
 # 🌊 StreamFlow - Distributed Notification Engine
 
