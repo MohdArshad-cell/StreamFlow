@@ -1,5 +1,7 @@
 package com.streamflow.core.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.streamflow.core.config.NotificationProperties;
 import com.streamflow.core.dto.NotificationRequest;
 import com.streamflow.core.dto.NotificationResponse;
@@ -32,17 +34,20 @@ public class NotificationService {
     private final StringRedisTemplate redisTemplate;
     private final NotificationProperties properties;
     private final MetricsService metricsService;
+    private final ObjectMapper objectMapper; // <--- ADD THIS
 
     public NotificationService(KafkaTemplate<String, String> kafkaTemplate,
                                NotificationRepository repository,
                                StringRedisTemplate redisTemplate,
                                NotificationProperties properties,
-                               MetricsService metricsService) {
+                               MetricsService metricsService,
+                               ObjectMapper objectMapper) { // <--- Inject ObjectMapper
         this.kafkaTemplate = kafkaTemplate;
         this.repository = repository;
         this.redisTemplate = redisTemplate;
         this.properties = properties;
         this.metricsService = metricsService;
+        this.objectMapper = objectMapper;
     }
 
     // ========== WRITE PATH (PRODUCER) ==========
@@ -50,27 +55,28 @@ public class NotificationService {
     public NotificationResponse sendNotification(NotificationRequest request) {
         String topic = properties.getKafka().getMainTopic();
         
-        kafkaTemplate.send(topic, request.getMessage());
-        metricsService.incrementNotificationsSent();  // Track metric
-        log.info("Message sent to Kafka topic '{}': {}", topic, request.getMessage());
+        try {
+            // FIX: Serialize the WHOLE request object to JSON
+            String payload = objectMapper.writeValueAsString(request);
+            
+            kafkaTemplate.send(topic, payload);
+            metricsService.incrementNotificationsSent();
+            log.info("Sent payload to Kafka topic '{}': {}", topic, payload);
 
-        return NotificationResponse.builder()
-                .status("QUEUED")
-                .message(request.getMessage())
-                .type(request.getType())
-                .channel(request.getChannel())
-                .userId(request.getUserId())
-                .detail("Notification queued successfully")
-                .queuedAt(LocalDateTime.now())
-                .build();
-    }
-
-    public String sendNotification(String message) {
-        String topic = properties.getKafka().getMainTopic();
-        kafkaTemplate.send(topic, message);
-        metricsService.incrementNotificationsSent();  // Track metric
-        log.info("Message sent to Kafka topic '{}': {}", topic, message);
-        return "Notification queued successfully";
+            return NotificationResponse.builder()
+                    .status("QUEUED")
+                    .message(request.getMessage())
+                    .type(request.getType())
+                    .channel(request.getChannel())
+                    .userId(request.getUserId())
+                    .detail("Notification queued successfully")
+                    .queuedAt(LocalDateTime.now())
+                    .build();
+            
+        } catch (JsonProcessingException e) {
+            log.error("Failed to serialize notification request", e);
+            throw new RuntimeException("Serialization error");
+        }
     }
 
     // ========== CONSUMER (RESILIENT WORKER) ==========
@@ -84,46 +90,59 @@ public class NotificationService {
             maxAttempts = 3,
             backoff = @Backoff(delay = 1000, multiplier = 2)
     )
-    public void consume(String message) {
-        Timer.Sample sample = metricsService.startTimer();  // Start timing
+    public void consume(String payload) {
+        Timer.Sample sample = metricsService.startTimer();
         
         try {
-            log.info("Processing notification message: {}", message);
+            log.info("Processing payload: {}", payload);
 
-            if (message.contains("error")) {
+            // Simulation of failure
+            if (payload.contains("error")) {
                 throw new RuntimeException("Simulated API Failure!");
             }
 
+            // FIX: Deserialize JSON back to Object
+            NotificationRequest request = objectMapper.readValue(payload, NotificationRequest.class);
+
             // Step A: Persistent Storage (MongoDB)
-            NotificationLog entity = NotificationLog.fromMessage(message);
+            // Now we map ALL fields (userId, type, channel)
+            NotificationLog entity = new NotificationLog(
+                    request.getMessage(),
+                    request.getType(),
+                    request.getChannel(),
+                    request.getUserId(),
+                    LocalDateTime.now()
+            );
+            
             repository.save(entity);
-            log.info("Notification saved to MongoDB with id={}", entity.getId());
+            log.info("Saved to MongoDB: [User: {}, Type: {}]", request.getUserId(), request.getType());
 
             // Step B: Performance Cache (Redis)
             String redisKey = properties.getRedis().getRecentNotificationsKey();
             int limit = properties.getRedis().getRecentNotificationsLimit();
 
-            redisTemplate.opsForList().leftPush(redisKey, message);
+            // We cache the full JSON payload so the "Recent" endpoint returns rich data too
+            redisTemplate.opsForList().leftPush(redisKey, payload);
             redisTemplate.opsForList().trim(redisKey, 0, limit - 1);
-            log.info("Notification cached in Redis under key={}", redisKey);
 
-            metricsService.incrementNotificationsProcessed();  // Track success
-            metricsService.stopTimer(sample);  // Record processing time
+            metricsService.incrementNotificationsProcessed();
+            metricsService.stopTimer(sample);
             
         } catch (Exception e) {
-            metricsService.incrementNotificationsFailed();  // Track failure
-            throw e;
+            log.error("Consumer error", e);
+            metricsService.incrementNotificationsFailed();
+            throw new RuntimeException(e); // Trigger retry
         }
     }
 
     // ========== FALLBACK (RECOVER) ==========
 
     @Recover
-    public void recover(RuntimeException e, String message) {
-        log.error("All retries failed for message='{}'. Sending to DLQ.", message, e);
+    public void recover(RuntimeException e, String payload) {
+        log.error("All retries failed. Sending to DLQ: {}", payload);
         String dlqTopic = properties.getKafka().getDlqTopic();
-        kafkaTemplate.send(dlqTopic, "FAILED: " + message);
-        metricsService.incrementDlqMessages();  // Track DLQ
+        kafkaTemplate.send(dlqTopic, "FAILED_PAYLOAD: " + payload);
+        metricsService.incrementDlqMessages();
     }
 
     // ========== DLQ LISTENER ==========
@@ -133,18 +152,19 @@ public class NotificationService {
             groupId = "#{notificationProperties.kafka.dlqConsumerGroup}"
     )
     public void consumeDLQ(String message) {
-        log.warn("DLQ received bad message: {}", message);
+        log.warn("DLQ Analysis Required: {}", message);
     }
 
-    // ========== READ PATH (FAST - REDIS) ==========
+    // ========== READ PATHS ==========
 
     public List<String> getRecentNotifications() {
         String redisKey = properties.getRedis().getRecentNotificationsKey();
+        // Returns list of JSON strings
         return redisTemplate.opsForList().range(redisKey, 0, -1);
     }
 
-    // ========== READ PATH (HISTORY & FILTERING - MONGO) ==========
-
+    // ... (Keep your existing Mongo query methods below: getNotificationHistory, getNotificationsByType, etc.)
+    
     public Page<NotificationLog> getNotificationHistory(Pageable pageable) {
         return repository.findAllByOrderByTimestampDesc(pageable);
     }
@@ -164,8 +184,6 @@ public class NotificationService {
     public List<NotificationLog> getNotificationsByTimeRange(LocalDateTime start, LocalDateTime end) {
         return repository.findByTimestampBetweenOrderByTimestampDesc(start, end);
     }
-
-    // ========== STATS & OBSERVABILITY ==========
 
     public NotificationStatsResponse getNotificationStats() {
         long total = repository.count();
