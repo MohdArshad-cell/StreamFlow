@@ -1,8 +1,19 @@
 version: '3.8'
+
+networks:
+  streamflow-network:
+    driver: bridge
+
+volumes:
+  mongodb-data:
+  redis-data:
+
 services:
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.0
     container_name: streamflow-zookeeper
+    networks:
+      - streamflow-network
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
@@ -14,28 +25,71 @@ services:
     container_name: streamflow-kafka
     depends_on:
       - zookeeper
+    networks:
+      - streamflow-network
     ports:
       - "9092:9092"
     restart: always
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      # This configuration works for Docker running on localhost
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      # Support both internal (container) and external (localhost) access
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
   zipkin:
     image: openzipkin/zipkin
     container_name: streamflow-zipkin
+    networks:
+      - streamflow-network
     ports:
       - "9411:9411"
+
   redis:
     image: redis:alpine
     container_name: streamflow-redis
+    networks:
+      - streamflow-network
     ports:
       - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+
   mongodb:
     image: mongo:latest
     container_name: streamflow-mongodb
+    networks:
+      - streamflow-network
     ports:
       - "27017:27017"
+    volumes:
+      - mongodb-data:/data/db
+    environment:
+      MONGO_INITDB_DATABASE: streamflow
+
+  # Optional: Your application container
+  streamflow-app:
+    build:
+      context: ./core/core
+      dockerfile: Dockerfile
+    container_name: streamflow-app
+    depends_on:
+      - kafka
+      - mongodb
+      - redis
+      - zipkin
+    networks:
+      - streamflow-network
+    ports:
+      - "9090:9090"
+    environment:
+      SPRING_DATA_MONGODB_URI: mongodb://mongodb:27017/streamflow
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      MANAGEMENT_ZIPKIN_TRACING_ENDPOINT: http://zipkin:9411/api/v2/spans
+      API_KEY: ${API_KEY:-secret-key-change-in-production}
+    restart: unless-stopped

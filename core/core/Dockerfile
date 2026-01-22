@@ -11,15 +11,27 @@ COPY src ./src
 RUN mvn clean package -DskipTests
 
 # --- Stage 2: Run the App (Uses a minimal JRE) ---
-# We use Alpine Linux for a tiny, secure image (~150MB instead of 500MB+)
 FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
+
+# Create a non-root user
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
 # Copy the JAR from the builder stage
 COPY --from=builder /app/target/*.jar app.jar
 
-# Expose the port
-EXPOSE 9090
+# Change ownership to non-root user
+RUN chown -R appuser:appgroup /app
 
-# Run the application
-ENTRYPOINT ["java", "-jar", "app.jar"]
+# Switch to non-root user
+USER appuser
+
+# Expose the port (configurable via environment variable)
+EXPOSE ${SERVER_PORT:-9090}
+
+# JVM options optimized for containers
+ENTRYPOINT ["java", \
+    "-XX:+UseContainerSupport", \
+    "-XX:MaxRAMPercentage=75.0", \
+    "-Djava.security.egd=file:/dev/./urandom", \
+    "-jar", "app.jar"]

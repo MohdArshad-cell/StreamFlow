@@ -9,49 +9,44 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-    services:
-      # We still need a simple Docker host for Testcontainers to work
-      docker:
-        image: docker:dind
-        options: --privileged
 
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
-      with:
-        java-version: '17'
-        distribution: 'temurin'
-        cache: 'maven'
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven'
 
-    # The "Top 10%" move: Testcontainers handles the infra.
-    # We don't need manual 'docker-compose up' steps here!
-    - name: Run Integration Tests
-      run: |
-        cd core/core
-        chmod +x mvnw   # <--- ADD THIS LINE
-        ./mvnw clean verify
+      - name: Run Integration Tests
+        run: |
+          cd core/core
+          chmod +x mvnw
+          ./mvnw clean verify
 
   docker-push:
     needs: build-and-test
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' # Only push on main branch
+    if: github.ref == 'refs/heads/main'
 
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-    - name: Login to Docker Hub
-      uses: docker/login-action@v3
-      with:
-        username: ${{ secrets.DOCKER_USERNAME }}
-        password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
-    - name: Build and Push Docker Image
-      uses: docker/build-push-action@v5
-      with:
-        context: ./core/core
-        push: true
-        tags: ${{ secrets.DOCKER_USERNAME }}/streamflow-backend:latest
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./core/core
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/streamflow-backend:latest
+            ${{ secrets.DOCKER_USERNAME }}/streamflow-backend:${{ github.sha }}

@@ -1,0 +1,71 @@
+server:
+  port: 9090
+
+spring:
+  application:
+    name: streamflow-notification-engine
+
+  data:
+    mongodb:
+      uri: mongodb://localhost:27017/streamflow
+    redis:
+      host: localhost
+      port: 6379
+
+  kafka:
+    bootstrap-servers: localhost:9092
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+    consumer:
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      auto-offset-reset: earliest
+      enable-auto-commit: true
+
+notification:
+  kafka:
+    main-topic: user-notifications
+    dlq-topic: notifications-dlq
+    consumer-group: notification-group
+    dlq-consumer-group: dlq-group
+  redis:
+    recent-notifications-key: recent_notifications
+    recent-notifications-limit: 10
+  security:
+    api-key: ${API_KEY:secret-key-change-in-production}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: always
+  tracing:
+    sampling:
+      probability: 1.0
+  zipkin:
+    tracing:
+      endpoint: http://localhost:9411/api/v2/spans
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+
+logging:
+  level:
+    com.streamflow.core: INFO
+    org.springframework.kafka: WARN
+    org.springframework.data.mongodb: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    enabled: true
